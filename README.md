@@ -1,58 +1,105 @@
 # decision-master
 
-Fast inference for the Qwen3-based DecisionMaster model: given a query (and optional context), it returns a probability distribution over a variable-size list of candidate answers.
+Given a query (and optional context), DecisionMaster returns a probability distribution over a variable-size list of candidate answers. It is a Qwen3-based model built for fast inference.
 
 ## Install
 
 ```bash
-pip install -e .            # or: pip install -e ".[dev]" to run the tests
+pip install -e .            # add ".[dev]" to run the tests
 ```
 
-## Usage
+## Quick start
 
 ```python
 from decision_master import DecisionMaster
 
-# Defaults to the Hub repo `leobitz/decision-master` at revision `base`.
-dm = DecisionMaster.from_pretrained()
+# Downloads leobitz/decision-master-base from the Hugging Face Hub.
+model = DecisionMaster.from_pretrained()
 
-pred = dm.decide(
-    query="Which of these is a fruit?",
-    candidates=["apple", "table", "car"],
-    context="A grocery list.",       # optional
+pred = model.decide(
+    query="What is the best category?",
+    context="Customer says they were billed twice and wants a refund.",  # optional
+    candidates=["billing", "shipping", "technical", "other"],
 )
-print(pred.best, pred.probabilities)
+print(pred.best, pred.probabilities[pred.best_index])
+print(pred.ranked())   # [(candidate, probability), ...] sorted high to low
+```
 
-# Many decisions at once (returned in input order):
-preds = dm.predict([
-    {"query": "...", "context": "...", "candidates": ["a", "b"]},
-    {"query": "...", "candidates": ["x", "y", "z"]},
+`from_pretrained` accepts a Hub repo id, an optional `revision`, or a local checkpoint directory (`model.safetensors` or `model.pt` plus `config.json` and tokenizer files):
+
+```python
+DecisionMaster.from_pretrained("leobitz/decision-master-base", revision="main")
+DecisionMaster.from_pretrained("checkpoints/best_val")
+```
+
+Optional arguments: `device="cuda"`, `dtype=torch.bfloat16` (default on GPU; float32 on CPU), `cache_dir`, `token`.
+
+## Batch prediction
+
+```python
+preds = model.predict([
+    {"query": "Is the sentiment positive or negative?", "context": "The food was cold.", "candidates": ["positive", "negative"]},
+    {"query": "What is the capital of France?", "candidates": ["Berlin", "Paris", "Madrid"]},
 ], batch_size=32)
 ```
 
-Other sources: `DecisionMaster.from_pretrained("leobitz/decision-master", revision="base")` or a local directory (e.g. a training checkpoint such as `checkpoints/best_val`; `model.safetensors` or `model.pt` are both accepted).
+Results come back in input order. Decisions can have different candidate counts. Lower `max_batch_tokens` (default 16384) if you run out of GPU memory.
 
-CLI:
+## JEV-style questions
+
+`decide_jev` answers several typed questions against one shared `state`:
+
+```python
+result = model.decide_jev({
+    "state": "A customer was charged twice and wants the duplicate charge refunded immediately.",
+    "questions": {
+        "refund_requested": {
+            "type": "noul",
+            "instructions": "Is the customer explicitly asking for a refund?",
+            "criteria": {"true": "The customer wants money returned.", "false": "They are not asking for a refund."},
+        },
+        "owner_team": {
+            "type": "choice",
+            "instructions": "Which team should own this case?",
+            "criteria": {"billing": "Charges and refunds.", "technical": "Bugs and outages."},
+        },
+        "priority": {
+            "type": "score",
+            "instructions": "How urgent is this case?",
+            "criteria": ["Low", "Medium", "High"],   # ordered low to high
+        },
+    },
+})
+result["answers"]["owner_team"]["choice"]
+```
+
+- `state` can be a string, a JSON object, or a list of texts.
+- `criteria` is either `{label: description}` or a list of labels.
+- `choice` and `score` answers contain `type`, `choice`, `probabilities` and `confidence` (the top probability).
+- `score` also has `score`, the probability-weighted 0-based level position (for `Low`/`Medium`/`High`, 0 to 2).
+- `noul` answers contain `choice`, `choice_index`, `probabilities` over the criteria, plus `query`, `scores` and `rendered_choices`.
+
+## Command line
 
 ```bash
 decision-master decide --query "Which is a fruit?" --candidate apple --candidate table
-decision-master decide --input decisions.jsonl > predictions.jsonl
+decision-master decide --input decisions.jsonl > predictions.jsonl   # one {"query","context","candidates"} per line
 ```
 
-## Publishing a model
+## Publishing a checkpoint
 
-Convert a training checkpoint into a self-contained repo (safetensors, embedded Qwen3 config, tokenizer), then upload it to the `base` revision:
+Convert a training checkpoint into a self-contained Hub repo (safetensors, embedded Qwen3 config, tokenizer), then upload it:
 
 ```bash
 decision-master export --model checkpoints/best_val --output hf_repo
-hf upload leobitz/decision-master hf_repo --revision base
+hf upload leobitz/decision-master-base hf_repo
 ```
 
 ## Why it is fast
 
-- Each decision is packed as a single sequence `[context | cand 0 | cand 1 | ...]` with a tree attention mask and explicit position ids. The shared context is computed once and one ordinary batched transformer pass scores all candidates (verified equal to running `context + candidate` separately in `tests/`).
-- PyTorch SDPA attention, bf16/fp16 on GPU, `inference_mode`, weights loaded directly onto the device without random init.
-- Examples are sorted by length and batched under a token budget (`max_batch_tokens`) to minimise padding; the CPU packs the next batch while the GPU is busy, with a single host sync at the end.
+- Each decision is packed as one sequence, `[context | cand 0 | cand 1 | ...]`, with a tree attention mask. The shared context is computed once and a single batched pass scores every candidate. Tests check this equals running `context + candidate` separately.
+- PyTorch SDPA attention, bf16/fp16 on GPU, `inference_mode`, and weights loaded straight onto the device.
+- Examples are sorted by length and batched under a token budget to limit padding. The CPU packs the next batch while the GPU works.
 
 ## Tests
 
