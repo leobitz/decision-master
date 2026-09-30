@@ -9,9 +9,17 @@ from huggingface_hub.errors import EntryNotFoundError
 
 from .config import CONFIG_NAME
 
-DEFAULT_MODEL_ID = "leobitz/decision-master-base"
+DEFAULT_MODEL_ID = "leobitz/decision-master"
+DEFAULT_TAG = "base"
 
 _SMALL_FILES = ["*.json", "*.txt", "*.model"]
+
+
+def resolve_model_id(name: str) -> str:
+    """Map a tag to a repo id (``"base"`` -> ``"leobitz/decision-master-base"``); repo ids and local dirs pass through."""
+    if Path(name).is_dir() or "/" in name:
+        return name
+    return f"{DEFAULT_MODEL_ID}-{name}"
 
 
 def resolve_files(

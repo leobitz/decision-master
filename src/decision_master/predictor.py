@@ -10,7 +10,7 @@ from transformers import AutoTokenizer
 
 from .batching import encode_decisions, pack_batch, plan_batches
 from .config import CONFIG_NAME, DecisionMasterConfig
-from .hub import DEFAULT_MODEL_ID, load_weights, resolve_files
+from .hub import DEFAULT_TAG, load_weights, resolve_files, resolve_model_id
 from .modeling import DecisionMasterModel
 from .schema import Decision, Prediction
 
@@ -23,6 +23,9 @@ def _default_dtype(device: torch.device) -> torch.dtype:
     if device.type == "cuda":
         return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     return torch.float32
+
+
+_NOUL_CRITERIA = {"true": "Yes.", "false": "No."}
 
 
 def _render_state(state: Any) -> str:
@@ -38,33 +41,32 @@ def _render_state(state: Any) -> str:
 class DecisionMaster:
     """Pick the best candidate for a query/context with the Qwen3 DecisionMaster model."""
 
-    def __init__(self, model: DecisionMasterModel, tokenizer, device: torch.device):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.device = device
+    def __init__(
+        self,
+        tag: str = DEFAULT_TAG,
+        *,
+        revision: Optional[str] = None,
+        device: str | torch.device | None = None,
+        dtype: torch.dtype | None = None,
+        cache_dir: Optional[str] = None,
+        token: Optional[str] = None,
+    ):
+        """Load a model. ``tag`` is a model tag (``"base"`` -> ``leobitz/decision-master-base``),
+        a full Hub repo id, or a local checkpoint directory."""
+        self.device = torch.device(device) if device is not None else _default_device()
+        dtype = dtype or _default_dtype(self.device)
+        folder, weights = resolve_files(resolve_model_id(tag), revision, cache_dir, token)
+        config = DecisionMasterConfig.from_json(folder / CONFIG_NAME)
+        self.model = DecisionMasterModel.from_state_dict(config, load_weights(weights), self.device, dtype)
+        self.tokenizer = AutoTokenizer.from_pretrained(str(folder))
+        tokenizer = self.tokenizer
         if tokenizer.eos_token_id is None:
             raise ValueError("Tokenizer must define eos_token_id")
         self._pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
     @classmethod
-    def from_pretrained(
-        cls,
-        model_id: str = DEFAULT_MODEL_ID,
-        revision: Optional[str] = None,
-        *,
-        device: str | torch.device | None = None,
-        dtype: torch.dtype | None = None,
-        cache_dir: Optional[str] = None,
-        token: Optional[str] = None,
-    ) -> "DecisionMaster":
-        """Load from a Hugging Face repo id (at ``revision``) or a local checkpoint directory."""
-        device = torch.device(device) if device is not None else _default_device()
-        dtype = dtype or _default_dtype(device)
-        folder, weights = resolve_files(model_id, revision, cache_dir, token)
-        config = DecisionMasterConfig.from_json(folder / CONFIG_NAME)
-        model = DecisionMasterModel.from_state_dict(config, load_weights(weights), device, dtype)
-        tokenizer = AutoTokenizer.from_pretrained(str(folder))
-        return cls(model, tokenizer, device)
+    def from_pretrained(cls, tag: str = DEFAULT_TAG, revision: Optional[str] = None, **kwargs) -> "DecisionMaster":
+        return cls(tag, revision=revision, **kwargs)
 
     def save_pretrained(self, path: str | Path) -> None:
         """Write a self-contained repo (config with embedded backbone config, safetensors, tokenizer)."""
@@ -86,10 +88,13 @@ class DecisionMaster:
         ``payload = {"state": str | dict | list, "questions": {name: {"type", "instructions", "criteria"}}}``.
         ``criteria`` is either a mapping ``{label: description}`` (candidates are rendered as
         ``"label: description"``) or a list of labels; for ``score`` the order is low to high.
+        ``noul`` questions need no ``criteria``: the true/false candidates are added internally
+        (``criteria`` may still supply ``true`` / ``false`` descriptions).
 
         Returns ``{"answers": {name: ...}}``. ``choice`` and ``score`` answers carry ``choice``,
         ``probabilities`` and ``confidence`` (top probability); ``score`` adds ``score``, the
-        probability-weighted 0-based level position.
+        probability-weighted 0-based level position. ``noul`` answers are ``{"type", "noul"}`` where
+        ``noul`` is the probability that the proposition is true.
         """
         state = _render_state(payload.get("state", ""))
         questions = payload.get("questions")
@@ -101,6 +106,10 @@ class DecisionMaster:
             if not isinstance(spec, Mapping):
                 raise TypeError(f"Question '{name}' must be a mapping.")
             criteria = spec.get("criteria")
+            if spec.get("type") == "noul":
+                # noul has no user-facing choices; we supply true/false and only reuse given descriptions.
+                given = criteria if isinstance(criteria, Mapping) else {}
+                criteria = {key: given.get(key) or text for key, text in _NOUL_CRITERIA.items()}
             if isinstance(criteria, Mapping):
                 labels = [str(k) for k in criteria]
                 rendered = [str(k) if v is None else f"{k}: {v}" for k, v in criteria.items()]
@@ -120,15 +129,7 @@ class DecisionMaster:
             qtype = spec.get("type")
             probabilities = dict(zip(labels, pred.probabilities))
             if qtype == "noul":
-                answers[name] = {
-                    "type": qtype,
-                    "query": decision.query,
-                    "choice": labels[pred.best_index],
-                    "choice_index": pred.best_index,
-                    "probabilities": probabilities,
-                    "scores": dict(probabilities),
-                    "rendered_choices": list(decision.candidates),
-                }
+                answers[name] = {"type": qtype, "noul": probabilities["true"]}
                 continue
             answer = {
                 "type": qtype,

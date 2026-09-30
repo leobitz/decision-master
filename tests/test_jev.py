@@ -36,9 +36,7 @@ def test_decide_jev_answers():
     assert [d.context for d in dm.seen] == [PAYLOAD["state"]] * 3
     assert dm.seen[0].candidates == ["true: Wants money back.", "false: Does not."]
 
-    noul = answers["refund_requested"]
-    assert noul["type"] == "noul" and noul["choice"] == "false" and noul["choice_index"] == 1
-    assert noul["probabilities"] == {"true": 0.2, "false": 0.8}
+    assert answers["refund_requested"] == {"type": "noul", "noul": 0.2}
 
     assert answers["department"] == {
         "type": "choice",
@@ -50,6 +48,19 @@ def test_decide_jev_answers():
     score = answers["priority"]
     assert score["choice"] == "Medium" and score["confidence"] == pytest.approx(0.4)
     assert score["score"] == pytest.approx(0.4 * 1 + 0.4 * 2)
+
+
+def test_decide_jev_noul_without_criteria():
+    dm = _Stub()
+    out = dm.decide_jev({"state": "x", "questions": {"q": {"type": "noul", "instructions": "Needs review?"}}})
+    assert out["answers"]["q"] == {"type": "noul", "noul": 0.2}
+    assert dm.seen[0].candidates == ["true: Yes.", "false: No."]
+
+    # Unrelated criteria are ignored; given true/false descriptions are reused.
+    dm.decide_jev({"state": "x", "questions": {"q": {"type": "noul", "criteria": {"a": "b"}}}})
+    assert dm.seen[0].candidates == ["true: Yes.", "false: No."]
+    dm.decide_jev({"state": "x", "questions": {"q": {"type": "noul", "criteria": {"true": "Urgent."}}}})
+    assert dm.seen[0].candidates == ["true: Urgent.", "false: No."]
 
 
 def test_decide_jev_renders_object_and_array_state():

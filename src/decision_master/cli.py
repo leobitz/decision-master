@@ -6,23 +6,21 @@ import sys
 
 import torch
 
-from .hub import DEFAULT_MODEL_ID
+from .hub import DEFAULT_TAG
 from .predictor import DecisionMaster
 
 _DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
 
 
 def _add_model_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--model", default=DEFAULT_MODEL_ID, help="Hub repo id or local checkpoint directory.")
+    p.add_argument("--model", default=DEFAULT_TAG, help="Model tag (e.g. base), Hub repo id, or local checkpoint directory.")
     p.add_argument("--revision", default=None, help="Hub branch/tag (ignored for local dirs).")
     p.add_argument("--device", default=None)
     p.add_argument("--dtype", choices=sorted(_DTYPES), default=None)
 
 
 def _load(args) -> DecisionMaster:
-    return DecisionMaster.from_pretrained(
-        args.model, args.revision, device=args.device, dtype=_DTYPES.get(args.dtype)
-    )
+    return DecisionMaster(args.model, revision=args.revision, device=args.device, dtype=_DTYPES.get(args.dtype))
 
 
 def _cmd_decide(args) -> None:

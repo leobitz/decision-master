@@ -13,8 +13,8 @@ pip install -e .            # add ".[dev]" to run the tests
 ```python
 from decision_master import DecisionMaster
 
-# Downloads leobitz/decision-master-base from the Hugging Face Hub.
-model = DecisionMaster.from_pretrained()
+# The tag "base" loads leobitz/decision-master-base from the Hugging Face Hub.
+model = DecisionMaster("base")
 
 pred = model.decide(
     query="What is the best category?",
@@ -25,11 +25,12 @@ print(pred.best, pred.probabilities[pred.best_index])
 print(pred.ranked())   # [(candidate, probability), ...] sorted high to low
 ```
 
-`from_pretrained` accepts a Hub repo id, an optional `revision`, or a local checkpoint directory (`model.safetensors` or `model.pt` plus `config.json` and tokenizer files):
+The first argument is a model tag (`"base"` -> `leobitz/decision-master-base`, default `"base"`), a full Hub repo id, or a local checkpoint directory (`model.safetensors` or `model.pt` plus `config.json` and tokenizer files). `DecisionMaster.from_pretrained(...)` is an equivalent alias.
 
 ```python
-DecisionMaster.from_pretrained("leobitz/decision-master-base", revision="main")
-DecisionMaster.from_pretrained("checkpoints/best_val")
+DecisionMaster()                                            # same as "base"
+DecisionMaster("leobitz/decision-master-base", revision="main")
+DecisionMaster("checkpoints/best_val")
 ```
 
 Optional arguments: `device="cuda"`, `dtype=torch.bfloat16` (default on GPU; float32 on CPU), `cache_dir`, `token`.
@@ -77,7 +78,7 @@ result["answers"]["owner_team"]["choice"]
 - `criteria` is either `{label: description}` or a list of labels.
 - `choice` and `score` answers contain `type`, `choice`, `probabilities` and `confidence` (the top probability).
 - `score` also has `score`, the probability-weighted 0-based level position (for `Low`/`Medium`/`High`, 0 to 2).
-- `noul` answers contain `choice`, `choice_index`, `probabilities` over the criteria, plus `query`, `scores` and `rendered_choices`.
+- `noul` answers are `{"type": "noul", "noul": p}` where `p` is the probability the proposition is true. `criteria` is optional and the `true`/`false` candidates are added internally (given `true`/`false` descriptions are reused).
 
 ## Command line
 
